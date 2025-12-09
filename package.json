@@ -11,5 +11,8 @@
     "express": "latest",
     "qrcode": "latest",
     "cors": "latest"
-  }
+  },
+"qrcode": "latest"
+
 }
+
