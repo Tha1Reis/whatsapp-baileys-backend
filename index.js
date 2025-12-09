@@ -5,16 +5,18 @@ import makeWASocket, {
 import express from "express";
 import fs from "fs";
 import { Boom } from "@hapi/boom";
+import QRCode from "qrcode";
 
-// LOG EXTRA
+// VARIÁVEL GLOBAL PARA GUARDAR QR
+let latestQR = null;
+
+// Iniciando servidor
 console.log("🚀 Iniciando servidor...");
 
 // Garante pasta AUTH
 if (!fs.existsSync("./auth")) {
     fs.mkdirSync("./auth");
     console.log("Pasta 'auth' criada automaticamente!");
-} else {
-    console.log("Pasta 'auth' já existia.");
 }
 
 const app = express();
@@ -22,57 +24,44 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// FUNÇÃO WHATSAPP
 async function iniciarWhatsapp() {
     console.log("📄 Carregando credenciais...");
 
-    let state, saveCreds;
-    try {
-        const auth = await useMultiFileAuthState("./auth");
-        state = auth.state;
-        saveCreds = auth.saveCreds;
-        console.log("✔ Credenciais carregadas.");
-    } catch (err) {
-        console.error("❌ Erro ao carregar credenciais:", err);
-        return;
-    }
+    const { state, saveCreds } = await useMultiFileAuthState("./auth");
 
-    console.log("🔌 Iniciando conexão com o WhatsApp...");
-
-    let sock;
-    try {
-        sock = makeWASocket({
-            printQRInTerminal: true,
-            auth: state,
-            browser: ["Railway", "Chrome", "1.0"],
-        });
-    } catch (err) {
-        console.error("❌ Erro ao criar socket:", err);
-        return;
-    }
+    const sock = makeWASocket({
+        printQRInTerminal: false, // DESATIVA QR NO TERMINAL
+        auth: state,
+        browser: ["Railway", "Chrome", "1.0"],
+    });
 
     sock.ev.on("creds.update", saveCreds);
 
-    // EVENTOS
-    sock.ev.on("connection.update", (update) => {
-        const { connection, lastDisconnect } = update;
+    sock.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
         console.log("📡 Evento de conexão:", update);
+
+        // Se chegou QR, salvamos para exibir no navegador
+        if (qr) {
+            latestQR = await QRCode.toDataURL(qr);
+            console.log("🔑 QR atualizado e pronto na rota /qr");
+        }
 
         if (connection === "open") {
             console.log("🎉 WhatsApp conectado com sucesso!");
+            latestQR = null; // Limpa o QR após login
         }
 
         if (connection === "close") {
-            const reason =
-                new Boom(lastDisconnect?.error)?.output?.statusCode;
-
+            const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log("❌ Conexão perdida:", reason);
 
             if (reason !== DisconnectReason.loggedOut) {
-                console.log("🔄 Recarregando conexão...");
+                console.log("🔄 Tentando reconectar...");
                 iniciarWhatsapp();
             } else {
-                console.log("⚠ Login expirado. Escaneie o QR novamente.");
+                console.log("⚠ Login expirado. Novo QR será gerado.");
             }
         }
     });
@@ -82,27 +71,42 @@ async function iniciarWhatsapp() {
 
 let client;
 
-// CHAMADA PRINCIPAL
-iniciarWhatsapp()
-    .then((c) => {
-        console.log("✨ Cliente WhatsApp inicializado:", !!c);
-        client = c;
-    })
-    .catch((err) => console.error("❌ Erro geral:", err));
+// Inicializa WhatsApp
+iniciarWhatsapp().then((c) => {
+    console.log("✨ Cliente WhatsApp inicializado");
+    client = c;
+});
 
 // ROTA TESTE
 app.get("/", (req, res) => {
     res.send("API OK 🚀");
 });
 
-// ROTA ENVIO
+// ROTA PARA VER QR NO NAVEGADOR
+app.get("/qr", (req, res) => {
+    if (!latestQR) {
+        return res.send(`
+            <h2>🤖 Nenhum QR disponível agora</h2>
+            <p>Se o WhatsApp já estiver conectado, o QR some.</p>
+            <p>Se estiver carregando, recarregue esta página.</p>
+        `);
+    }
+
+    res.send(`
+        <h2>📱 Escaneie para conectar ao WhatsApp</h2>
+        <img src="${latestQR}" />
+        <p>Atualize a página se o QR mudar.</p>
+    `);
+});
+
+// ROTA PARA ENVIAR MENSAGEM
 app.post("/send", async (req, res) => {
     try {
-        if (!client) return res.status(500).json({ error: "WA não iniciado." });
+        if (!client) return res.status(500).json({ error: "WA não iniciado" });
 
         const { number, message } = req.body;
-
         const jid = `${number}@s.whatsapp.net`;
+
         await client.sendMessage(jid, { text: message });
 
         res.json({ status: "ok" });
