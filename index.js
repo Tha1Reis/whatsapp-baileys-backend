@@ -1,11 +1,18 @@
 import express from "express";
 import cors from "cors";
-import { makeWASocket, useMultiFileAuthState } from "@whiskeysockets/baileys";
+import { makeWASocket, useMultiFileAuthState, Browsers } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
+import fs from "fs";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Garantir que a pasta auth existe
+if (!fs.existsSync("./auth")) {
+  fs.mkdirSync("./auth");
+  console.log("Pasta auth criada!");
+}
 
 let sock;
 let qrCodeImage = null;
@@ -15,17 +22,27 @@ async function connectWhatsApp() {
 
   sock = makeWASocket({
     auth: state,
+    printQRInTerminal: false,
+    browser: Browsers.macOS("Safari") // mais estável
   });
 
   sock.ev.on("creds.update", saveCreds);
 
-  // IGNORA mensagens recebidas
-  sock.ev.on("messages.upsert", () => {});
-
-  // Atualiza QR
   sock.ev.on("connection.update", async (update) => {
-    if (update.qr) {
-      qrCodeImage = await QRCode.toDataURL(update.qr);
+    const { connection, qr, lastDisconnect } = update;
+
+    if (qr) {
+      qrCodeImage = await QRCode.toDataURL(qr);
+      console.log("QR gerado!");
+    }
+
+    if (connection === "open") {
+      console.log("Conectado ao WhatsApp!");
+    }
+
+    if (connection === "close") {
+      console.log("Conexão perdida, tentando reconectar...");
+      connectWhatsApp();
     }
   });
 }
@@ -36,17 +53,17 @@ app.get("/", (req, res) => {
   res.send("API WhatsApp Online!");
 });
 
-// ROTA PARA PEGAR O QR
+// Rota para pegar QR
 app.get("/qr", (req, res) => {
   res.json({ qr: qrCodeImage });
 });
 
-// ENVIAR MENSAGEM
+// Rota para enviar mensagens
 app.post("/send", async (req, res) => {
   try {
     const { number, message } = req.body;
 
-    await sock.sendMessage(number + "@s.whatsapp.net", { text: message });
+    await sock.sendMessage(`${number}@s.whatsapp.net`, { text: message });
 
     res.json({ success: true });
   } catch (e) {
@@ -54,6 +71,6 @@ app.post("/send", async (req, res) => {
   }
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log("API Rodando!");
-});
+app.listen(process.env.PORT || 3000, () =>
+  console.log("API Rodando!")
+);
